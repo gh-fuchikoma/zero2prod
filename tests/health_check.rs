@@ -1,20 +1,7 @@
 use std::net::TcpListener;
 
-#[actix_web::test]
-async fn health_check_works() {
-    let address = spawn_app();
-
-    let client = reqwest::Client::new();
-
-    let response = client
-        .get(format!("{}/health_check", address))
-        .send()
-        .await
-        .expect("Failed to send /health_check.");
-
-    assert!(response.status().is_success());
-    assert_eq!(Some(0), response.content_length());
-}
+use sqlx::{Connection, PgConnection};
+use zero2prod::{FormData, configuration::get_configuration};
 
 fn spawn_app() -> String {
     let listener = TcpListener::bind("127.0.0.1:0").expect("Failed to bind ranodm port address");
@@ -24,4 +11,75 @@ fn spawn_app() -> String {
     tokio::spawn(server);
 
     format!("http://127.0.0.1:{}", port)
+}
+
+#[actix_web::test]
+async fn health_check_works() {
+    let app_address = spawn_app();
+    let client = reqwest::Client::new();
+
+    let response = client
+        .get(format!("{}/health_check", app_address))
+        .send()
+        .await
+        .expect("Failed to send /health_check.");
+
+    assert!(response.status().is_success());
+    assert_eq!(Some(0), response.content_length());
+}
+
+#[actix_web::test]
+async fn subscribe_returns_a_200_for_valid_form_data() {
+    let app_addrses = spawn_app();
+    let configuration = get_configuration().expect("Failed to read configuration");
+    let connection_string = configuration.database.connection_string();
+    let mut connection = PgConnection::connect(&connection_string)
+        .await
+        .expect("Failed to connect to Postgres.");
+    let client = reqwest::Client::new();
+
+    let body = "name=Jane%20Doe&email=jane_doe%40gmail.com";
+    let response = client
+        .post(format!("{}/subscriptions", app_addrses))
+        .header("Content-Type", "application/x-www-form-urlencoded")
+        .body(body)
+        .send()
+        .await
+        .expect("Failed to execute subscriber request.");
+    assert_eq!(200, response.status().as_u16());
+
+    let saved = sqlx::query_as!(FormData, "SELECT email, name FROM subscriptions")
+        .fetch_one(&mut connection)
+        .await
+        .expect("Failed to fetch saved subscription.");
+
+    assert_eq!(saved.email, "jane_doe@gmail.com");
+    assert_eq!(saved.name, "Jane Doe");
+}
+
+#[actix_web::test]
+async fn subscribe_returns_a_400_when_data_is_missing() {
+    let app_addrses = spawn_app();
+    let client = reqwest::Client::new();
+    let test_cases = vec![
+        ("name=Jane%20Doe", "missing the email"),
+        ("email=jane_doe%40gmail.com", "missing the name"),
+        ("", "missing both name and email"),
+    ];
+    for (invalid_body, error_message) in test_cases {
+        let response = client
+            .post(format!("{}/subscriptions", app_addrses))
+            .header("Content-Type", "application/x-www-form-urlencoded")
+            .body(invalid_body)
+            .send()
+            .await
+            .expect("Failed to execute subscriber request.");
+
+        assert_eq!(
+            400,
+            response.status().as_u16(),
+            "The API did not fail with 400 Bad Request when the payload was {}.",
+            error_message
+        );
+    }
 }
