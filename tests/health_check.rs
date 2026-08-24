@@ -10,6 +10,46 @@ use zero2prod::{
 pub struct TestApp {
     pub address: String,
     pub db_pool: PgPool,
+    pub db_config: DatabaseSettings,
+}
+
+impl Drop for TestApp {
+    fn drop(&mut self) {
+        let db_config = self.db_config.clone();
+
+        let handle = std::thread::spawn(move || {
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap();
+
+            rt.block_on(async move {
+                let mut connection =
+                    PgConnection::connect(&db_config.connection_string_without_db())
+                        .await
+                        .expect("Failed to connect to Postgres for cleanup.");
+
+                let disconnect_query = format!(
+                    r#"SELECT pg_terminate_backend(pg_stat_activity.pid) 
+                       FROM pg_stat_activity 
+                       WHERE pg_stat_activity.datname = '{}' AND pid <> pg_backend_pid();"#,
+                    db_config.database_name
+                );
+
+                let _ = sqlx::query(AssertSqlSafe(disconnect_query))
+                    .execute(&mut connection)
+                    .await;
+
+                let drop_query = format!(r#"DROP DATABASE "{}";"#, db_config.database_name);
+
+                let _ = sqlx::query(AssertSqlSafe(drop_query))
+                    .execute(&mut connection)
+                    .await;
+            });
+        });
+
+        let _ = handle.join();
+    }
 }
 
 async fn spawn_app() -> TestApp {
@@ -25,6 +65,7 @@ async fn spawn_app() -> TestApp {
     TestApp {
         address,
         db_pool: connection_pool,
+        db_config: configuration.database,
     }
 }
 
