@@ -1,13 +1,13 @@
 use std::net::TcpListener;
 
 use sqlx::{Connection, PgConnection};
-use zero2prod::{FormData, configuration::get_configuration};
+use zero2prod::{configuration::get_configuration, routes::FormData, startup::run};
 
 fn spawn_app() -> String {
     let listener = TcpListener::bind("127.0.0.1:0").expect("Failed to bind ranodm port address");
     let port = listener.local_addr().unwrap().port();
 
-    let server = zero2prod::run(listener).expect("Failed to bind address");
+    let server = run(listener).expect("Failed to bind address");
     tokio::spawn(server);
 
     format!("http://127.0.0.1:{}", port)
